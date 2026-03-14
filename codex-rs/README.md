@@ -53,6 +53,16 @@ You can enable notifications by configuring a script that is run whenever the ag
 To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the prompt via `stdin`) and Codex will work on your task until it decides that it is done and exits. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
 Use `codex exec --ephemeral ...` to run without persisting session rollout files to disk.
 
+### Semantic indexing for larger codebases
+
+`codex index` builds a local semantic index at `.codex_index/index.json` by chunking text files in the workspace and embedding them with the OpenAI embeddings API. `codex search "<query>"` re-embeds the query and returns the closest indexed snippets with file paths, line ranges, and excerpts. For codebases with misleading local names, `codex index --normalize-identifiers --dual-embeddings` stores both original and identifier-normalized embeddings and uses the stronger match during search.
+
+```shell
+codex index --src .
+codex search "refactor image upload to be async" --top 8 --filter "*.rs"
+codex index --src . --normalize-identifiers --dual-embeddings
+```
+
 ### Experimenting with the Codex Sandbox
 
 To test to see what happens when a command is run under the sandbox provided by Codex, we provide the following subcommands in Codex CLI:

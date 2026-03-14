@@ -39,10 +39,13 @@ mod app_cmd;
 #[cfg(target_os = "macos")]
 mod desktop_app;
 mod mcp_cmd;
+mod semantic_index;
 #[cfg(not(windows))]
 mod wsl_paths;
 
 use crate::mcp_cmd::McpCli;
+use crate::semantic_index::IndexCommand;
+use crate::semantic_index::SearchCommand;
 
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -111,6 +114,12 @@ enum Subcommand {
 
     /// Generate shell completion scripts.
     Completion(CompletionCommand),
+
+    /// Build a local semantic index for the current workspace.
+    Index(IndexCommand),
+
+    /// Search a local semantic index with a natural-language query.
+    Search(SearchCommand),
 
     /// Run commands within a Codex-provided sandbox.
     Sandbox(SandboxArgs),
@@ -711,6 +720,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         Some(Subcommand::Completion(completion_cli)) => {
             print_completion(completion_cli);
         }
+        Some(Subcommand::Index(index_cli)) => {
+            let config = load_cli_config(&root_config_overrides, &interactive).await?;
+            semantic_index::run_index(index_cli, &config).await?;
+        }
+        Some(Subcommand::Search(search_cli)) => {
+            let config = load_cli_config(&root_config_overrides, &interactive).await?;
+            semantic_index::run_search(search_cli, &config).await?;
+        }
         Some(Subcommand::Cloud(mut cloud_cli)) => {
             prepend_config_flags(
                 &mut cloud_cli.config_overrides,
@@ -891,15 +908,7 @@ async fn run_debug_clear_memories_command(
     root_config_overrides: &CliConfigOverrides,
     interactive: &TuiCli,
 ) -> anyhow::Result<()> {
-    let cli_kv_overrides = root_config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
-    let overrides = ConfigOverrides {
-        config_profile: interactive.config_profile.clone(),
-        ..Default::default()
-    };
-    let config =
-        Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
+    let config = load_cli_config(root_config_overrides, interactive).await?;
 
     let state_path = state_db_path(config.sqlite_home.as_path());
     let mut cleared_state_db = false;
@@ -936,6 +945,22 @@ async fn run_debug_clear_memories_command(
     println!("{message}");
 
     Ok(())
+}
+
+async fn load_cli_config(
+    root_config_overrides: &CliConfigOverrides,
+    interactive: &TuiCli,
+) -> anyhow::Result<Config> {
+    let cli_kv_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let overrides = ConfigOverrides {
+        config_profile: interactive.config_profile.clone(),
+        ..Default::default()
+    };
+    Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides)
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 /// Prepend root-level overrides so they have lower precedence than
@@ -1544,5 +1569,50 @@ mod tests {
             .to_overrides()
             .expect_err("feature should be rejected");
         assert_eq!(err.to_string(), "Unknown feature flag: does_not_exist");
+    }
+
+    #[test]
+    fn index_subcommand_parses_flags() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "index",
+            "--src",
+            "repo",
+            "--chunk-lines",
+            "120",
+            "--chunk-overlap-lines",
+            "20",
+            "--normalize-identifiers",
+            "--dual-embeddings",
+        ])
+        .expect("parse should succeed");
+        let Some(Subcommand::Index(index)) = cli.subcommand else {
+            panic!("expected index subcommand");
+        };
+        assert_eq!(index.src, PathBuf::from("repo"));
+        assert_eq!(index.chunk_lines, 120);
+        assert_eq!(index.chunk_overlap_lines, 20);
+        assert!(index.normalize_identifiers);
+        assert!(index.dual_embeddings);
+    }
+
+    #[test]
+    fn search_subcommand_parses_query_and_filter() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "search",
+            "async image upload",
+            "--top",
+            "5",
+            "--filter",
+            "*.rs",
+        ])
+        .expect("parse should succeed");
+        let Some(Subcommand::Search(search)) = cli.subcommand else {
+            panic!("expected search subcommand");
+        };
+        assert_eq!(search.query, "async image upload");
+        assert_eq!(search.top, 5);
+        assert_eq!(search.filter.as_deref(), Some("*.rs"));
     }
 }
